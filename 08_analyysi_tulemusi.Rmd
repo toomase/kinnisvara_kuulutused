@@ -1,0 +1,324 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Analüüsi korterite müügikuulutuste avapiltide ja erinevate parameertrite vahelisi seoseid.
+
+```{r}
+library(tidyverse)
+library(hrbrthemes)
+library(skimr)
+
+options(scipen = 99)
+
+# lae toa indeksi ja nime seos
+load(file = "data/tuba_classes_indices_gpu.RData")
+
+# lae iga müügikuulutuse pildi kohta tema toa ennustus
+tubade_ennustus <- read_rds("data/tubade_ennustus.rds")
+
+# lae müügikuulutuste tabel
+korterite_myygukuulutused_raw <- read_rds("data/korterite_myygikuulutused.rds")
+```
+
+
+
+## Eeltöötle andmeid
+
+Tabel toa nime ja indeksiga
+```{r}
+id_tuba <- tuba_classes_indices %>% 
+  as_tibble() %>% 
+  gather("tuba", "indeks") %>% 
+  arrange(indeks) %>% 
+  mutate(id = indeks + 1) %>% 
+  select(id, tuba)
+
+id_tuba
+```
+
+Lisa ennustatud tulemustele toa nimi
+```{r}
+ennustus_toaga <- tubade_ennustus %>% 
+  gather("id", "vaartus", 1:6) %>% 
+  group_by(path) %>% 
+  filter(vaartus == max(vaartus)) %>% 
+  ungroup() %>% 
+  mutate(id = as.numeric(str_replace(id, "V", ""))) %>% 
+  left_join(id_tuba, by = "id") %>% 
+  mutate(pildi_id = str_extract(path, "\\d.*")) %>% 
+  select(pildi_id, tuba)
+
+ennustus_toaga
+```
+
+Lisa kuulutuste infole ennustatud avapildi tuba ja eraldi muud infot kuulutusest
+```{r}
+kuulutused <- korterite_myygukuulutused_raw %>% 
+  mutate(pildi_id = str_extract(pildi_url, "(?<=_34_).*")) %>% 
+  left_join(ennustus_toaga, by = "pildi_id") %>% 
+  mutate(ehitusaasta = as.numeric(str_extract(str_to_lower(kirjeldus), "(?<=ehitusaasta )\\d{4}")),
+         korruseid_majas = str_extract(kirjeldus, "\\d\\/\\d"),
+         pindala = parse_number(pind),
+         maksumus = parse_number(str_replace_all(hind, "\\s", "")),
+         tuba = case_when(tuba == "kook" ~ "köök",
+                          tuba == "ouest" ~ "õuest",
+                          tuba == "tyhi_tuba" ~ "tühi tuba",
+                          TRUE ~ tuba)) %>% 
+  separate(korruseid_majas, into = c("korrus", "korruseid_majas"), sep = "\\/")
+```
+
+Salvesta töödeldud tabel kuulutuste kohta
+```{r}
+write_rds(kuulutused, "data/kuulutused.rds")
+```
+
+
+Tutvu andmetega
+```{r}
+glimpse(kuulutused)
+skim(kuulutused)
+```
+
+## Analüüsi tulemusi
+
+### Tubade arv
+
+Kuidas jaotub tubade arv erinevate ennustatud toa pildi puhul?
+```{r fig.height=7, fig.width=8}
+kuulutused %>% 
+  filter(!is.na(tube)) %>% 
+  mutate(tube = fct_lump(as.factor(tube), n = 4),
+         tube = fct_recode(tube, "5+" = "Other")) %>% 
+  count(tuba, tube) %>% 
+  group_by(tuba) %>% 
+  mutate(protsent = round(n / sum(n), 3)) %>% 
+  ggplot(aes(tube, protsent, group = tuba)) +
+  geom_col() +
+  theme_ipsum_rc() +
+  facet_wrap(~tuba) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expand_scale(add = c(0, 0.05))) +
+  geom_text(aes(label = scales::percent(protsent, accuracy = 1)), vjust = -0.2) +
+  labs(title = "Tubade arvu jaotus",
+       subtitle = "kuulutuste ava-piltide lõikes",
+       x = "tubade arv",
+       y = "% korteritest")
+```
+
+Tubade arvu jaotus selle põhjal, kas ava-pilt on korterist seest või väljast tehtud.
+```{r fig.height=5, fig.width=8}
+kuulutused %>% 
+  mutate(tuba = ifelse(tuba == "õuest", tuba, "seest")) %>% 
+  filter(!is.na(tube)) %>% 
+  mutate(tube = fct_lump(as.factor(tube), n = 4),
+         tube = fct_recode(tube, "5+" = "Other")) %>% 
+  count(tuba, tube) %>% 
+  group_by(tuba) %>% 
+  mutate(protsent = round(n / sum(n), 3)) %>% 
+  ggplot(aes(tube, protsent, group = tuba)) +
+  geom_col() +
+  theme_ipsum_rc() +
+  facet_wrap(~tuba) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expand_scale(add = c(0, 0.05))) +
+  geom_text(aes(label = scales::percent(protsent, accuracy = 1)), vjust = -0.2) +
+  labs(title = "Tubade arvu jaotus",
+       subtitle = "kuulutuste ava-piltide lõikes",
+       x = "tubade arv",
+       y = "% korteritest")
+```
+
+### Ehitusaasta
+
+
+Mis tuba on kõige rohkem ava-pildina kasutatud eri ajal valminud korterite puhul?
+```{r fig.height=7, fig.width=10}
+kuulutused %>% 
+  mutate(ehitusaasta_bin = case_when(ehitusaasta >= 2019 ~ "2019-...",
+                                     ehitusaasta >= 2015 ~ "2015-2018",
+                                     ehitusaasta >= 1990 ~ "1990-2014",
+                                     ehitusaasta >= 1970 ~ "1970-1989",
+                                     ehitusaasta >= 1950 ~ "1950-1969",
+                                     ehitusaasta < 1950 ~ "...-1950")) %>% 
+  filter(!is.na(ehitusaasta)) %>% 
+  count(tuba, ehitusaasta_bin) %>% 
+  group_by(ehitusaasta_bin) %>% 
+  mutate(protsent = round(n / sum(n), 3)) %>% 
+  ggplot(aes(tuba, protsent, group = ehitusaasta_bin)) +
+  geom_col() +
+  theme_ipsum_rc() +
+  facet_wrap(~ehitusaasta_bin) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expand_scale(add = c(0, 0.15))) +
+  geom_text(aes(label = scales::percent(protsent, accuracy = 1)), hjust = -0.2) +
+  labs(title = "Kuulutuste ava-piltide jaotus ehitusaastate lõikes",
+       x = "ava-pilt",
+       y = "% korteritest")
+```
+
+
+Mis tuba on kõige rohkem ava-pildina kasutatud eri ajal valminud korterite puhul?
+```{r fig.height=5, fig.width=10}
+kuulutused %>% 
+  mutate(tuba = ifelse(tuba == "õuest", tuba, "seest")) %>% 
+  mutate(ehitusaasta_bin = case_when(ehitusaasta >= 2019 ~ "2019-...",
+                                     ehitusaasta >= 2015 ~ "2015-2018",
+                                     ehitusaasta >= 1990 ~ "1990-2014",
+                                     ehitusaasta >= 1970 ~ "1970-1989",
+                                     ehitusaasta >= 1950 ~ "1950-1969",
+                                     ehitusaasta < 1950 ~ "...-1950")) %>% 
+  filter(!is.na(ehitusaasta)) %>% 
+  count(tuba, ehitusaasta_bin) %>% 
+  group_by(ehitusaasta_bin) %>% 
+  mutate(protsent = round(n / sum(n), 3)) %>% 
+  ggplot(aes(tuba, protsent, group = ehitusaasta_bin)) +
+  geom_col() +
+  theme_ipsum_rc() +
+  facet_wrap(~ehitusaasta_bin) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expand_scale(add = c(0, 0.15))) +
+  geom_text(aes(label = scales::percent(protsent, accuracy = 1)), hjust = -0.2) +
+  labs(title = "Kuulutuste ava-piltide jaotus ehitusaastate lõikes",
+       x = "ava-pilt",
+       y = "% korteritest")
+```
+
+
+### Pindala
+
+Kuidas jaotuvad korterite pindalad ava-piltide lõikes?
+```{r fig.height=7, fig.width=10}
+kuulutused %>% 
+  filter(!is.na(pindala)) %>% 
+  mutate(pindala_bin = case_when(pindala <= 30 ~ "...-30m2",
+                                 pindala <= 40 ~ "31-40m2",
+                                 pindala <= 50 ~ "41-50m2",
+                                 pindala <= 70 ~ "51-70m2",
+                                 pindala <= 100 ~ "71-100m2",
+                                 TRUE ~ "101-...m2")) %>%
+  group_by(pindala_bin) %>% 
+  mutate(pindala_min = min(pindala)) %>% 
+  ungroup() %>% 
+  mutate(pindala_bin = fct_rev(fct_reorder(pindala_bin, pindala_min))) %>% 
+  count(tuba, pindala_bin) %>% 
+  group_by(tuba) %>% 
+  mutate(protsent = round(n / sum(n), 3)) %>% 
+  ggplot(aes(pindala_bin, protsent, group = tuba)) +
+  geom_col() +
+  theme_ipsum_rc() +
+  facet_wrap(~tuba) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expand_scale(add = c(0, 0.05))) +
+  geom_text(aes(label = scales::percent(protsent, accuracy = 1)), hjust = -0.2) +
+  labs(title = "Korterite pindala jaotus",
+       subtitle = "kuulutuste ava-piltide lõikes",
+       x = "korteri m2",
+       y = "% korteritest")
+```
+
+Kuidas jaotuvad korterite pindalad ava-piltide lõikes?
+```{r fig.height=5, fig.width=10}
+kuulutused %>% 
+  mutate(tuba = ifelse(tuba == "õuest", tuba, "seest")) %>% 
+  filter(!is.na(pindala)) %>% 
+  mutate(pindala_bin = case_when(pindala <= 30 ~ "...-30m2",
+                                 pindala <= 40 ~ "31-40m2",
+                                 pindala <= 50 ~ "41-50m2",
+                                 pindala <= 70 ~ "51-70m2",
+                                 pindala <= 100 ~ "71-100m2",
+                                 TRUE ~ "101-...m2")) %>%
+  group_by(pindala_bin) %>% 
+  mutate(pindala_min = min(pindala)) %>% 
+  ungroup() %>% 
+  mutate(pindala_bin = fct_rev(fct_reorder(pindala_bin, pindala_min))) %>% 
+  count(tuba, pindala_bin) %>% 
+  group_by(tuba) %>% 
+  mutate(protsent = round(n / sum(n), 3)) %>% 
+  ggplot(aes(pindala_bin, protsent, group = tuba)) +
+  geom_col() +
+  theme_ipsum_rc() +
+  facet_wrap(~tuba) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expand_scale(add = c(0, 0.05))) +
+  geom_text(aes(label = scales::percent(protsent, accuracy = 1)), hjust = -0.2) +
+  labs(title = "Korterite pindala jaotus",
+       subtitle = "kuulutuste ava-piltide lõikes",
+       x = "korteri m2",
+       y = "% korteritest")
+```
+
+
+### Maksumus
+
+Milline on ava-piltide jaotus korteri kuulutuse ava-piltide lõikes.
+```{r fig.height=7, fig.width=10}
+kuulutused %>% 
+  filter(!is.na(maksumus)) %>% 
+  mutate(maksumus_bin = case_when(maksumus < 20000 ~ "...-20K",
+                                  maksumus < 50000 ~ "30K-50K",
+                                  maksumus < 75000 ~ "50K-75K",
+                                  maksumus < 100000 ~ "75K-100K",
+                                  maksumus < 150000 ~ "100K-150K",
+                                  maksumus < 200000 ~ "150K-200K",
+                                  TRUE ~ "200K-...")) %>% 
+  group_by(maksumus_bin) %>% 
+  mutate(maksumus_min = min(maksumus)) %>% 
+  ungroup() %>% 
+  mutate(maksumus_bin = fct_reorder(maksumus_bin, maksumus_min)) %>% 
+  count(tuba, maksumus_bin) %>% 
+  group_by(maksumus_bin) %>% 
+  mutate(protsent = round(n / sum(n), 3)) %>% 
+  ggplot(aes(tuba, protsent, group = maksumus_bin)) +
+  geom_col() +
+  theme_ipsum_rc() +
+  facet_wrap(~maksumus_bin) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expand_scale(add = c(0, 0.1))) +
+  geom_text(aes(label = scales::percent(protsent, accuracy = 1)), hjust = -0.2) +
+  labs(title = "Kuulutuste ava-piltide jaotus maksumuse lõikes",
+       x = "",
+       y = "% korteritest")
+```
+
+
+
+Milline on ava-piltide jaotus korteri kuulutuse ava-piltide lõikes.
+```{r fig.height=5, fig.width=10}
+kuulutused %>%
+  mutate(tuba = ifelse(tuba == "õuest", tuba, "seest")) %>% 
+  filter(!is.na(maksumus)) %>% 
+  mutate(maksumus_bin = case_when(maksumus < 20000 ~ "...-20K",
+                                  maksumus < 50000 ~ "30K-50K",
+                                  maksumus < 75000 ~ "50K-75K",
+                                  maksumus < 100000 ~ "75K-100K",
+                                  maksumus < 150000 ~ "100K-150K",
+                                  maksumus < 200000 ~ "150K-200K",
+                                  TRUE ~ "200K-...")) %>% 
+  group_by(maksumus_bin) %>% 
+  mutate(maksumus_min = min(maksumus)) %>% 
+  ungroup() %>% 
+  mutate(maksumus_bin = fct_reorder(maksumus_bin, maksumus_min)) %>% 
+  count(tuba, maksumus_bin) %>% 
+  group_by(maksumus_bin) %>% 
+  mutate(protsent = round(n / sum(n), 3)) %>% 
+  ggplot(aes(tuba, protsent, group = maksumus_bin)) +
+  geom_col() +
+  theme_ipsum_rc() +
+  facet_wrap(~maksumus_bin) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expand_scale(add = c(0, 0.1))) +
+  geom_text(aes(label = scales::percent(protsent, accuracy = 1)), hjust = -0.2) +
+  labs(title = "Kuulutuste ava-piltide jaotus maksumuse lõikes",
+       x = "",
+       y = "% korteritest")
+```
+
+

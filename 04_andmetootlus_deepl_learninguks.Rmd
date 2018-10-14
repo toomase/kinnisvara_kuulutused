@@ -1,0 +1,318 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Töötle TAG-tud pildid deep learningu jaoks sobivale kujule:
+  * Iga TAG-i alla kuuluvad pildid eraldi kausta
+  
+```{r}
+library(tidyverse)
+library(magick)
+library(keras)
+library(fs)
+
+# kõik failid, kus on pildi TAG tunnused
+# aluseks olid kuulutuste avalehel olnud pildid
+pildi_tunused_path <- list.files("data/kuulutuste_pildid_tunnused/", full.names = TRUE)
+
+# kõi failid, kus TAG-tud on random pilt
+# aluseks ~1000 random pilti kõigist kuulutustest
+pildid_tunnused_random_path <- list.files("data/kuulutuste_random_pildid_tunnused/", full.names = TRUE)
+```
+
+
+Funktsioon TAG-de laadimiseks koos pildi ID-ga 
+```{r}
+lae_tunnus_koodiga <- function(x){
+  id <- as.numeric(str_extract(x, "[[:digit:]]{8}"))
+  tag <- as.numeric(read_rds(x))
+  
+  tulemus <- tibble(id, tag)
+  return(tulemus)
+}
+```
+
+Lae kõigi TAG-tud piltide tunnused ühte dataframe
+```{r}
+tunnused_raw <- map_df(pildi_tunused_path, lae_tunnus_koodiga)
+
+tunnused_random_raw <- map_df(pildid_tunnused_random_path, lae_tunnus_koodiga)
+
+glimpse(tunnused_raw)
+```
+
+
+Dekodeeri TAG-tud koodid konkreetseks toa nimeks 
+```{r}
+# mapingu tabel kood - toa nimi
+tuba_kood <- tribble(
+  ~tuba, ~kood,
+  "magamistuba", 1,
+  "elutuba", 2, 
+  "kook", 3,
+  "vannituba", 4,
+  "ouest", 5,
+  "tyhi_tuba", 6)
+
+tunnused <- tunnused_raw %>% 
+  inner_join(tuba_kood, by = c("tag" = "kood"))
+
+tunnused_random <- tunnused_random_raw %>% 
+  inner_join(tuba_kood, by = c("tag" = "kood"))
+
+glimpse(tunnused)
+```
+
+Kui palju mingeid tube on TAG-tud?
+```{r}
+tunnused_kokku <- tunnused %>% 
+  bind_rows(tunnused_random) 
+
+tunnused_kokku %>% 
+  count(tuba, sort = TRUE)
+```
+
+funktsioon, mis kopeerib kõik ühe TAG-ga pildid ühte kausta kokku
+```{r}
+kopeeri_pildid_kaustadesse <- function(x){
+  # loo kaust kui juba pole
+  if (is_dir(str_c("data/train/", x)) == FALSE) {
+    dir_create(str_c("data/train/", x))
+    
+    # välistamiseks pildi id-d, mis on juba kopeeritud kausta
+    existing_ids <- list.files(str_c("data/train/", x)) %>% 
+      str_replace_all(".jpg", "") %>% 
+      as.numeric()
+    
+    # kopeeri pildid kausta
+    kopeeritud <- tunnused_kokku %>% 
+      filter(tuba == x) %>% 
+      filter(!id %in% existing_ids) %>% 
+      pull(id) %>% 
+      str_c("data/kuulutuste_pildid_backup/kuulutuste_pildid_backup/", ., ".jpg") %>% 
+      file.copy(str_c("data/train/", x), overwrite = TRUE)
+    
+      # kopeeri pildid kausta
+    kopeeritud_random <- tunnused_kokku %>% 
+      filter(tuba == x) %>% 
+      filter(!id %in% existing_ids) %>% 
+      pull(id) %>% 
+      str_c("data/kuulutuste_random_pildid_backup/", ., ".jpg") %>% 
+      file.copy(str_c("data/train/", x), overwrite = TRUE)
+  } else {
+    # välistamiseks pildi id-d, mis on juba kopeeritud kausta
+    existing_ids <- list.files(str_c("data/train/", x)) %>% 
+      str_replace_all(".jpg", "") %>% 
+      as.numeric()
+    
+    # kopeeri pildid kausta
+    kopeeritud <- tunnused_kokku %>% 
+      filter(tuba == x) %>% 
+      filter(!id %in% existing_ids) %>% 
+      pull(id) %>% 
+      str_c("data/kuulutuste_pildid_backup/kuulutuste_pildid_backup/", ., ".jpg") %>% 
+      file.copy(str_c("data/train/", x), overwrite = TRUE)
+    
+      # kopeeri pildid kausta
+    kopeeritud_random <- tunnused_kokku %>% 
+      filter(tuba == x) %>% 
+      filter(!id %in% existing_ids) %>% 
+      pull(id) %>% 
+      str_c("data/kuulutuste_random_pildid_backup/kuulutuste_random_pildid/", ., ".jpg") %>% 
+      file.copy(str_c("data/train/", x), overwrite = TRUE) 
+  }
+}
+
+kopeeri_pildid_kaustadesse_possibly <- possibly(kopeeri_pildid_kaustadesse, NULL)
+```
+
+Kopeeri TAG-tu pildid eraldi kaustadesse
+```{r}
+map(tuba_kood$tuba, kopeeri_pildid_kaustadesse_possibly)
+```
+
+
+## Genereeri kunstlikult pilte juurde nendesse gruppidesse kus TAG-tud pilte on vähem
+
+Funktsioon, mis kopeerib train kaustast kõik folderid for_augumentation kausta
+```{r}
+kopeeri_for_augumentation <- function(x){
+  
+  # kui kausta pole, siis loo kaus
+  if (is_dir(str_c("data/for_augumentation/", x, "/", x)) == FALSE) {
+    dir_create(str_c("data/for_augumentation/", x, "/", x))
+  }
+  
+  # pildi failide nimekiri, mis ei ole "aug_" eesliitega
+  file_list <- list.files(str_c("data/train/", x), full.names = TRUE) %>% 
+    as.tibble() %>% 
+    filter(!str_detect(value, "aug_")) %>% 
+    pull(value)
+  
+  # kaust kuhu tulemused kopeerida
+  target <- str_c("data/for_augumentation/", x, "/", x)
+  
+  # kopeeri pildid
+  file.copy(file_list, target)
+}
+
+# kopeeri kõik originaal pildid for_augumentation kausta
+map(tuba_kood$tuba, kopeeri_for_augumentation)
+```
+
+Funktsioon, mis genereerib pildid
+```{r}
+genereeri_pildid <- function(x){
+  
+  # kui kausta pole, siis loo kaus
+  if (is_dir(str_c("data/augumented/", x)) == FALSE) {
+    dir_create(str_c("data/augumented/", x))
+  }
+  
+  # kui palju pilte on Õuest tehtud (see on max)
+  max_pilte <- length(list.files("data/for_augumentation/ouest/ouest/"))
+  
+  # kui pilte on vastavast toast vähem kui õuest, siis genereeri pilte juurde
+  if (length(list.files(str_c("data/for_augumentation/", x, "/", x))) + 
+      length(list.files(str_c("data/augumented/", x))) < max_pilte - 50) {
+    
+    img_width <- 383
+    img_height <- 218
+    channels <- 3
+    
+    gen = image_data_generator(
+      rescale = 1/255,
+      rotation_range = 40,
+      width_shift_range = 0.2,
+      height_shift_range = 0.2,
+      shear_range = 0.2,
+      zoom_range = 0.2,
+      horizontal_flip = TRUE,
+      fill_mode = "nearest"
+    )
+    
+    array_gen <- flow_images_from_directory(str_c("data/for_augumentation/", x, "/"), 
+                                              gen,
+                                              target_size = c(img_height, img_width),
+                                              save_to_dir = str_c("data/augumented/", x),
+                                              save_prefix = "aug",
+                                              save_format = "jpg")
+    
+    train_samples <- array_gen$n
+    
+    batch_size <- 32
+    epochs <- 1
+    
+    model <- keras_model_sequential()
+    
+    model %>%
+      layer_conv_2d(filter = 32, kernel_size = c(3,3), padding = "same",
+                    input_shape = c(img_height, img_width, channels)) %>%
+      layer_activation("relu")
+    
+    # compile
+    model %>% compile(
+      loss = "categorical_crossentropy",
+      optimizer = optimizer_rmsprop(lr = 0.0001, decay = 1e-6),
+      metrics = "accuracy"
+    )
+    
+    model %>% fit_generator(
+      array_gen,
+      steps_per_epoch = as.integer(train_samples / batch_size), 
+      epochs = epochs, 
+      verbose = 2)
+  }
+}
+
+genereeri_pildid_possibly = possibly(genereeri_pildid, NULL)
+```
+
+
+Genereeri kõikide tuba pilte sama palju kui on õuest tehtud pilte
+```{r}
+rerun(10, map(tuba_kood %>% filter(tuba != "ouest") %>% pull(tuba), 
+              genereeri_pildid_possibly))
+```
+
+Kustuta kõik varasemad aug_ eesliitega pildid train kaustast, et nende asemele kopeerida uued.
+```{r}
+x <- "kook"
+
+kustuta_aug <- function(x){
+  nimekiri_aug <- list.files(str_c("data/train/", x), full.names = ) %>% 
+    as_tibble() %>% 
+    filter(str_detect(value, "aug_")) %>% 
+    mutate(value = str_c("data/train/", x, "/", value)) %>% 
+    pull(value)
+  
+  file_delete(nimekiri_aug)
+}
+
+kustuta_aug_possibly <- possibly(kustuta_aug, NULL)
+
+map(tuba_kood %>% filter(tuba != "ouest") %>% pull(tuba),
+    kustuta_aug_possibly)
+```
+
+
+Funktsioon, mis kopeerib genereeritud pildid training kaustadesse
+```{r}
+kopeeri_augumented_to_training <- function(x){
+  
+  # pildi failide nimekiri, mis  augumented kaustas
+  file_list <- list.files(str_c("data/augumented/", x), full.names = TRUE)
+  
+  # kaust kuhu tulemused kopeerida
+  target <- str_c("data/train/", x)
+  
+  # kopeeri pildid
+  file.copy(file_list, target)
+}
+
+# kopeeri kõik augumented pildeid train kausta
+map(tuba_kood %>% filter(tuba != "ouest") %>% pull(tuba), 
+    kopeeri_augumented_to_training)
+```
+
+Kontroli palju faile mingis kaustas on
+```{r}
+kontrolli_piltide_arv <- function(x){
+  
+  pilte <- length(list.files(str_c("data/train/", x)))
+  
+  tibble(tuba = x,
+         pilte = pilte)
+}
+
+map_df(tuba_kood$tuba, kontrolli_piltide_arv)
+```
+
+
+
+### Võta igast TAG grupist 100 pilti validation jaoks
+
+Loo validation kaustad
+```{r}
+map(tuba_kood$tuba, function(x) fs::dir_create(str_c("data/validation/", x)))
+```
+
+Liiguta 100 pilti igast train kaustast validation kausta
+```{r}
+liiguta_pildid_validationisse <- function(x){
+  
+  if (length(list.files(str_c("data/validation/", x))) == 0) {
+    
+    random_files <- list.files(str_c("data/train/", x), full.names = TRUE) %>% 
+      as_tibble() %>% 
+      sample_n(100) %>% 
+      pull(value)
+    
+    fs::file_move(random_files, str_c("data/validation/", x))
+  } 
+}
+
+map(tuba_kood$tuba, liiguta_pildid_validationisse)
+```
+

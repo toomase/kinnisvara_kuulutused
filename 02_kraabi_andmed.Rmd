@@ -1,0 +1,190 @@
+---
+title: "Kraabi kuulutuste andmed ja pildid"
+output: html_notebook
+---
+
+Kraabi kv.ee lehelt korterite müügi kuulutuste kohta info ja avapildid.
+Seejärel kasuta shiny äppi osade piltide tag-miseks ning treeni tag-tud piltide põhjal neural network, mis suudaks ise tag-e määrata.
+ 
+
+```{r}
+library(rvest)
+library(tidyverse)
+library(magick)
+
+```
+
+Funktsioon kuulutuste info kraapimiseks
+```{r}
+kraabi_kuulutuste_info <- function(x){
+  Sys.sleep(abs(rnorm(1)))
+  
+  lehe_html <- read_html(x)
+  
+  aadress <- lehe_html %>% 
+    html_nodes(".object-title-a") %>% 
+    html_text() %>% 
+    str_wrap()
+  
+  kirjeldus <- lehe_html %>% 
+    html_nodes(".object-excerpt") %>% 
+    html_text() %>% 
+    str_wrap() %>% 
+    # kuna kirjeldus on kahel real iga kuuutuse kohta, siis pane need ühele reale kokku
+    as.tibble() %>% 
+    mutate(id = rep(1:50, each = 2)) %>% 
+    group_by(id) %>% 
+    summarise(kirjeldus = str_c(value, collapse = "\n")) %>% 
+    pull(kirjeldus)
+  
+  tube <- lehe_html %>% 
+    html_nodes(".object-rooms") %>% 
+    html_text() %>% 
+    as.numeric()
+  
+  pind = lehe_html %>% 
+    html_nodes(".object-m2") %>% 
+    html_text() %>% 
+    str_wrap()
+  
+  hind <- lehe_html %>% 
+    html_nodes(".object-price-value") %>% 
+    html_text() %>% 
+    str_wrap()
+  
+  pildi_url <- lehe_html %>% 
+    html_nodes(".image_lazy") %>% 
+    html_attr("data-original") %>% 
+    str_replace_all("1_32_", "1_34_")  # suurem pildi formaat
+  
+  kuulutuse_url <- lehe_html %>% 
+    html_nodes(".object-title-a") %>% 
+    html_attr("href")
+  
+  kuulutuste_info <- tibble(aadress, tube, pind, hind, kirjeldus, 
+                            kuulutuse_url, pildi_url)
+  
+  return(kuulutuste_info)
+}
+
+kraabi_kuulutuste_info_possibly <- possibly(kraabi_kuulutuste_info, NULL)
+```
+
+Genereeri kuulutuste avalehed, mille pealt hakkan andmeid kraapima
+```{r}
+kuulutused_url <- str_c("http://kinnisvaraportaal-kv-ee.postimees.ee/?act=search.simple&page=", 1:238, "&orderby=ob&deal_type=1&dt_select=1&search_type=old&keyword")
+```
+
+Kraabi korterite müügikuulutuste info
+```{r}
+system.time(
+  korterite_myygikuulutused <- map_df(kuulutused_url, kraabi_kuulutuste_info_possibly)
+)
+```
+
+Salvesta kuulutuste dataframe edasiseks kasutamiseks
+```{r}
+saveRDS(korterite_myygikuulutused, file = "data/korterite_myygikuulutused.rds")
+```
+
+```{r}
+korterite_myygikuulutused <- read_rds("data/korterite_myygikuulutused.rds")
+```
+
+
+
+Funktsioon piltide allalaadimiseks ja nimetamiseks
+Esialgu laadisin
+```{r}
+salvesta_pilt <- function(x){
+  Sys.sleep(abs(rnorm(1)))
+  output <- str_c("data/kuulutuste_pildid/", str_extract(x, "(?<=_34_).*"))
+  download.file(x, output)
+}
+
+salvesta_pilt_possibly <- possibly(salvesta_pilt, NULL)
+```
+
+
+Lae kõigi kuulutuste pildid
+```{r message=FALSE, warning=FALSE, results=FALSE}
+system.time(
+  map(korterite_myygikuulutused$pildi_url, salvesta_pilt_possibly)
+)
+```
+
+
+
+
+## Kraabi osade kuulutuste kohta täiendavaid pilt
+
+See on vajalik, et saada rohkem näiteid pildidest vannitoast ja magamistoast.
+Esialgu seda siiski ei kasuta vaid proovin random genereeritud piltide url-dega
+
+Koosta list random 1000 kuulutuse kohta, kust detailsemaid pilte kraabin
+```{r}
+set.seed(1000)
+
+detailinfo_url <- korterite_myygukuulutused_raw %>% 
+  sample_n(1000) %>% 
+  pull(kuulutuse_url)
+```
+
+Funktsioon piltide url-de kraapimiseks.
+```{r}
+kraabi_detailsete_piltide_url <- function(x){
+  Sys.sleep(abs(rnorm(1)))
+  
+  html <- read_html(x)
+  
+  pildi_url <- html %>% 
+    html_nodes(".pull-left img") %>% 
+    html_attr("src")
+  
+  tulemus <- tibble(kuulutuse_url = x,
+                    pildi_url)
+  
+  return(tulemus)
+}
+
+kraabi_detailsete_piltide_url_possibly <- possibly(kraabi_detailsete_piltide_url, NULL)
+```
+
+
+Kraabi detailsete piltide url_d
+```{r}
+system.time(
+  detailinfo_pildid <- map_df(detailinfo_url, kraabi_detailsete_piltide_url_possibly)
+)
+```
+
+
+## Genereeri random pildi url ja lae alla
+
+Genereeri 1500 random piltide numbrid, et need alla laadida ja mudeli treenimisel kasutada
+Nii saab ehk pisut rohkem magamistubade ja vannitubade pilte mudeli treenimiseks kui ainult esilehe pilte kasutades.
+```{r}
+set.seed(35)
+random_number <- unique(round(runif(1500, min = 10000, max = 99999), 0))
+
+random_pildi_url <- str_c("http://cache.kv.ee/iv2/obj/1_34_579", random_number, ".jpg")
+```
+
+Funktsioon random piltide allalaadimiseks ja nimetamiseks
+```{r}
+salvesta_random_pilt <- function(x){
+  Sys.sleep(abs(rnorm(1)))
+  output <- str_c("data/kuulutuste_random_pildid/", str_extract(x, "(?<=_34_).*"))
+  download.file(x, output)
+}
+
+salvesta_random_pilt_possibly <- possibly(salvesta_random_pilt, NULL)
+```
+
+
+Lae random kuulutuste pildid
+```{r message=FALSE, warning=FALSE}
+system.time(
+  map(random_pildi_url, salvesta_random_pilt_possibly)
+)
+```

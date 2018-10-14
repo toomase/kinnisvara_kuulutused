@@ -1,0 +1,125 @@
+---
+title: "Kirjelda ennustusi"
+---
+
+Kirjelda näidete põhjal, milliseid pildi parameetreid mudel kasutab õige toa ennustamiseks.
+Aluseks on kaks õpetust: 
+  - https://shirinsplayground.netlify.com/2018/06/keras_fruits_lime/
+  - https://blogs.rstudio.com/tensorflow/posts/2018-03-09-lime-v04-the-kitten-picture-edition/
+
+```{r}
+library(keras)
+library(lime)
+library(tidyverse)
+library(magick)
+
+#lae tubade mudel, et selle abil ennustusi teha
+toad_model <- load_model_hdf5("data/toad_gpu_tuned.h5", custom_objects = NULL, compile = TRUE) 
+
+#Lae toa indeksi ja nime seos
+load(file = "data/tuba_classes_indices_gpu.RData")
+```
+
+
+## Testi toa klassi ennustuse kirjeldust
+
+Lae ja kuva üks pilt
+```{r}
+img_path <- "data/kuulutuste_pildid_backup/kuulutuste_pildid_backup//59624815.jpg"
+
+img <- image_read(img_path)
+plot(as.raster(img))
+```
+
+Tekita list toa nime ja indeksi vaheliste seostega, et nende põhjal kuvada pildile õige ennustatud toa nimi
+```{r}
+tuba_classes_indices_df <- data.frame(indices = unlist(tuba_classes_indices))
+tuba_classes_indices_df <- tuba_classes_indices_df[order(tuba_classes_indices_df$indices), , drop = FALSE]
+
+tuba_indices <- rownames(tuba_classes_indices_df)
+names(tuba_indices) <- unlist(tuba_classes_indices)
+tuba_indices
+```
+
+Funktsioon, mis muudab pildi mudeli jaoks sobivasse formaati.
+```{r}
+image_prep <- function(x) {
+  arrays <- lapply(x, function(path) {
+    img <- image_load(path, target_size = c(109, 192))
+    x <- image_to_array(img)
+    x <- reticulate::array_reshape(x, c(1, dim(x)))
+    x <- x / 255
+  })
+  do.call(abind::abind, c(arrays, list(along = 1)))
+}
+```
+
+
+Seleta pildi tunnused, mis aitavad ennustada toa klassi
+```{r}
+explainer <- lime(img_path, as_classifier(toad_model, tuba_indices), 
+                  image_prep)
+
+system.time(
+ explanation <- lime::explain(img_path, explainer, 
+                        n_labels = 1, n_features = 20) 
+)
+```
+
+Näita pildil need piirkonnad, mis aitavad ennustada toa klassi.
+Kasuta kolme viisi pildi kuvamiseks.
+```{r}
+plot_image_explanation(explanation)
+plot_image_explanation(explanation, display = 'block', threshold = 5e-07)
+plot_image_explanation(explanation, threshold = 0, show_negative = TRUE, fill_alpha = 0.6)
+```
+
+
+## Kirjelda kõigi tubade ennustusi
+
+Funktsioon seletuste tekitamiseks
+```{r}
+seleta_tunnused <- function(x){
+  explainer <- lime(x, as_classifier(toad_model, tuba_indices), 
+                         image_prep)
+
+  explanation <- lime::explain(x, explainer, 
+                               n_labels = 1, n_features = 20)
+  
+  return(explanation)
+}
+```
+
+List iga toa näidis pildiga
+```{r}
+kook_path <- "data/kuulutuste_pildid_backup/kuulutuste_pildid_backup//59624815.jpg"
+elutuba_path <- "data/kuulutuste_pildid_backup/kuulutuste_pildid_backup/58684369.jpg"
+ouest_path <- "data/for_augumentation/ouest/ouest//59293744.jpg"
+magamistuba_path <- "data/for_augumentation/magamistuba/magamistuba/57968964.jpg"
+tyhi_tuba_path <- "data/for_augumentation/tyhi_tuba/tyhi_tuba//59682033.jpg"
+vannituba_path <- "data/for_augumentation/vannituba/vannituba//57978994.jpg"
+
+naidis_toad <- c(kook_path, elutuba_path, magamistuba_path, vannituba_path,
+                 ouest_path, tyhi_tuba_path)
+```
+
+Näita näidis tubade pildid
+```{r}
+#map(naidis_toad, function(x) plot(as.raster(image_read(x))))
+```
+
+
+Leia iga näidis toa kohta tunnused, mis ennustust seletevad
+```{r}
+system.time(
+  naidis_tubade_selgitused <- map(naidis_toad, seleta_tunnused)
+)
+
+write_rds(naidis_tubade_selgitused, "data/naidis_tubade_selgitused.rds")
+```
+
+Kuva kõii näidis tubade ennustuste seletuste tulemused
+```{r}
+map(naidis_tubade_selgitused, plot_image_explanation)
+```
+

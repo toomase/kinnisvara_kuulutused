@@ -1,0 +1,383 @@
+---
+title: "Tsti tag'itud pilte"
+---
+
+Testi kui palju pilte on ära TAG-tud ning millised on tulemused.
+
+
+```{r}
+library(tidyverse)
+library(magick)
+library(keras)
+
+# kõik failid, kus on pildi TAG tunnused
+pildi_tunused_path <- list.files("~/Dropbox/DataScience/R/kinnisvara_kuulutused/data/kuulutuste_pildid_tunnused//", 
+                                 full.names = TRUE)
+
+# lae müügikuulutuste tabel
+korterite_myygukuulutused_raw <- read_rds("data/korterite_myygikuulutused.rds")
+```
+
+Tutvu andmetega
+```{r}
+glimpse(korterite_myygukuulutused_raw)
+```
+
+
+Funktsioon TAG-de laadimiseks koos pildi ID-ga 
+```{r}
+lae_tunnus_koodiga <- function(x){
+  id <- as.numeric(str_extract(x, "[[:digit:]]{8}"))
+  tag <- as.numeric(read_rds(x))
+  
+  tulemus <- tibble(id, tag)
+  return(tulemus)
+}
+```
+
+Lae kõigi TAG-tud piltide tunnused ühte dataframe
+```{r}
+tunnused_raw <- map_df(pildi_tunused_path, lae_tunnus_koodiga)
+
+glimpse(tunnused_raw)
+```
+
+Dekodeeri TAG-tud koodid konkreetseks toa nimeks 
+```{r}
+# mapingu tabel kood - toa nimi
+tuba_kood <- tribble(
+  ~tuba, ~kood,
+  "magamistuba", 1,
+  "elutuba", 2, 
+  "köök", 3,
+  "vannituba", 4,
+  "õuest", 5,
+  "tühi tuba", 6) %>% 
+  mutate()
+
+tunnused <- tunnused_raw %>% 
+  inner_join(tuba_kood, by = c("tag" = "kood"))
+
+glimpse(tunnused)
+```
+
+Kui palju mingeid tube on TAG-tud?
+```{r}
+tunnused %>% 
+  count(tuba, sort = TRUE)
+```
+
+
+## Test image classification with keras
+
+
+```{r}
+kook <- tunnused %>% 
+  filter(tuba == "köök") %>% 
+  pull(id) %>% 
+  str_c("data/kuulutuste_pildid_backup/kuulutuste_pildid_backup/", ., ".jpg") %>% 
+  file.path(.)
+
+file.copy(kook, "data/test/kook")
+```
+
+
+```{r}
+ouest <- tunnused %>% 
+  filter(tuba == "õuest") %>% 
+  pull(id) %>% 
+  str_c("data/kuulutuste_pildid_backup/kuulutuste_pildid_backup/", ., ".jpg") %>% 
+  file.path(.)
+
+file.copy(ouest, "data/test/ouest")
+```
+
+
+```{r}
+elutuba <- tunnused %>% 
+  filter(tuba == "elutuba") %>% 
+  pull(id) %>% 
+  str_c("data/kuulutuste_pildid_backup/kuulutuste_pildid_backup/", ., ".jpg") %>% 
+  file.path(.)
+
+file.copy(elutuba, "data/test/elutuba")
+```
+
+Milline on piltide suurus?
+```{r}
+kook_pilt <- image_read(kook[55])
+print(kook_pilt)
+```
+
+
+```{r}
+# tubade tüübid
+tubade_list <- tunnused %>% distinct(tuba) %>% pull(tuba)
+
+tubade_list <- c("kook", "elutuba", "ouest")
+
+# number of output classes
+output_n <- length(tubade_list)
+
+# image size to scale down to (original images are 100 x 100 px)
+img_width <- 38
+img_height <- 21
+target_size <- c(img_width, img_height)
+
+# RGB = 3 channels
+channels <- 3
+
+# path to image folders
+train_image_files_path <- "data/test/"
+# valid_image_files_path <- "/Users/shiringlander/Documents/Github/DL_AI/Tutti_Frutti/fruits-360/Validation/"
+
+
+train_data_gen = image_data_generator(
+  rescale = 1/255 #,
+  #rotation_range = 40,
+  #width_shift_range = 0.2,
+  #height_shift_range = 0.2,
+  #shear_range = 0.2,
+  #zoom_range = 0.2,
+  #horizontal_flip = TRUE,
+  #fill_mode = "nearest"
+)
+
+train_image_array_gen <- flow_images_from_directory(train_image_files_path, 
+                                          train_data_gen,
+                                          target_size = target_size,
+                                          class_mode = "categorical",
+                                          classes = tubade_list,
+                                          seed = 42)
+
+table(factor(train_image_array_gen$classes))
+train_image_array_gen$class_indices
+# p <- generator_next(train_image_array_gen)
+
+?flow_images_from_directory
+```
+
+```{r}
+
+train_data_gen = image_data_generator(
+  rescale = 1/255,
+  rotation_range = 40,
+  width_shift_range = 0.2,
+  height_shift_range = 0.2,
+  shear_range = 0.2,
+  zoom_range = 0.2,
+  horizontal_flip = TRUE,
+  fill_mode = "nearest"
+)
+
+train_image_array_gen <- flow_images_from_directory("data/test/aug_test/", 
+                                          train_data_gen,
+                                          target_size = c(100, 200),
+                                          class_mode = "categorical",
+                                          classes = c("first", "second"),
+                                          seed = 42,
+                                          save_to_dir = "data/test/aug_test_2/")
+```
+
+
+```{r}
+# number of training samples
+train_samples <- train_image_array_gen$n
+
+# define batch size and number of epochs
+batch_size <- 32
+epochs <- 10
+```
+
+```{r}
+# initialise model
+model <- keras_model_sequential()
+
+# add layers
+model %>%
+  layer_conv_2d(filter = 32, kernel_size = c(3,3), padding = "same", input_shape = c(img_width, img_height, channels)) %>%
+  layer_activation("relu") %>%
+  
+  # Second hidden layer
+  layer_conv_2d(filter = 16, kernel_size = c(3,3), padding = "same") %>%
+  layer_activation_leaky_relu(0.5) %>%
+  layer_batch_normalization() %>%
+
+  # Use max pooling
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_dropout(0.25) %>%
+  
+  # Flatten max filtered output into feature vector 
+  # and feed into dense layer
+  layer_flatten() %>%
+  layer_dense(100) %>%
+  layer_activation("relu") %>%
+  layer_dropout(0.5) %>%
+
+  # Outputs from dense layer are projected onto output layer
+  layer_dense(output_n) %>% 
+  layer_activation("softmax")
+
+# compile
+model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_rmsprop(lr = 0.0001, decay = 1e-6),
+  metrics = "accuracy"
+)
+```
+
+```{r}
+# fit
+hist <- model %>% fit_generator(
+  # training data
+  train_image_array_gen,
+  
+  # epochs
+  steps_per_epoch = as.integer(train_samples / batch_size), 
+  epochs = epochs, 
+  # class_weight = list("0" = 1.8, "1" = 2.7, "2" = 1),
+  
+  # validation data
+  # validation_data = valid_image_array_gen,
+  # validation_steps = as.integer(valid_samples / batch_size),
+  
+  # print progress
+  verbose = 2)
+
+?fit_generator
+```
+
+```{r}
+plot(hist)
+```
+
+```{r}
+train_image_array_gen$class_indices
+```
+
+
+```{r}
+image_prep <- function(x) {
+  arrays <- lapply(x, function(path) {
+    img <- image_load(path, target_size = c(38,21))
+    x <- image_to_array(img)
+    x <- array_reshape(x, c(1, dim(x)))
+    x <- imagenet_preprocess_input(x)
+  })
+  do.call(abind::abind, c(arrays, list(along = 1)))
+}
+
+res <- predict(model, image_prep(c("data/test/elutuba/57842194.jpg", "data/test/kook/59534697.jpg",
+                                   "data/test/ouest/59638676.jpg", "data/test/kook/59730314.jpg",
+                                   "data/test/elutuba/59439977.jpg", "data/test/elutuba/23852919.jpg",
+                                   "data/test/ouest/53364417.jpg", "data/test/kook/58675416.jpg",
+                                   "data/test/elutuba/59712818.jpg")))
+
+res
+```
+
+```{r}
+image_read("data/test/kook/59546475.jpg")
+```
+
+
+```{r}
+library(keras)
+mnist <- dataset_mnist()
+x_train <- mnist$train$x
+y_train <- mnist$train$y
+x_test <- mnist$test$x
+y_test <- mnist$test$y
+```
+
+```{r}
+# reshape
+x_train <- array_reshape(x_train, c(nrow(x_train), 784))
+x_test <- array_reshape(x_test, c(nrow(x_test), 784))
+# rescale
+x_train <- x_train / 255
+x_test <- x_test / 255
+```
+
+```{r}
+y_train <- to_categorical(y_train, 10)
+y_test <- to_categorical(y_test, 10)
+```
+
+```{r}
+model <- keras_model_sequential() 
+model %>% 
+  layer_dense(units = 256, activation = 'relu', input_shape = c(784)) %>% 
+  layer_dropout(rate = 0.4) %>% 
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 10, activation = 'softmax')
+```
+
+```{r}
+summary(model)
+
+```
+
+```{r}
+model %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_rmsprop(),
+  metrics = c('accuracy')
+)
+```
+
+```{r}
+history <- model %>% fit(
+  x_train, y_train, 
+  epochs = 30, batch_size = 128, 
+  validation_split = 0.2
+)
+
+```
+
+```{r}
+model %>% evaluate(x_test, y_test)
+```
+
+```{r}
+model %>% predict_classes(x_test)
+```
+
+```{r}
+# instantiate the model
+model <- application_resnet50(weights = 'imagenet')
+
+valid_data_gen <- image_data_generator(
+  rescale = 1/255
+  ) 
+
+img_width <- 20
+img_height <- 20
+target_size <- c(img_width, img_height)
+
+train_image_array_gen <- flow_images_from_directory(img_path, 
+                                          valid_data_gen,
+                                          target_size = target_size,
+                                          class_mode = "categorical",
+                                          seed = 42)
+
+# load the image
+img_path <- "data/kuulutuste_pildid/28950881.jpg"
+img <- image_load(img_path, target_size = c(224, 224))
+x <- image_to_array(img)
+
+magick::image_attributes(img_path)
+magick::image_read("data/kuulutuste_pildid/28950881.jpg")
+
+# ensure we have a 4d tensor with single element in the batch dimension,
+# the preprocess the input for prediction using resnet50
+x <- array_reshape(x, c(1, dim(x)))
+x <- imagenet_preprocess_input(x)
+
+# make predictions then decode and print them
+preds <- model %>% predict(x)
+imagenet_decode_predictions(preds, top = 3)[[1]]
+
+```
+

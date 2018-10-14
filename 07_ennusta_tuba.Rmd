@@ -1,0 +1,151 @@
+---
+title: "Ennusta tuba"
+output: html_notebook
+---
+
+Kasuta deep learning mudelit ja ennusta kõigi kv kuulutuste avapildilt tuba.
+
+```{r}
+library(tidyverse)
+library(keras)
+library(magick)
+
+#lae tubade mudel, et selle abil ennustusi teha
+toad_model <- load_model_hdf5("data/toad_gpu_tuned.h5", custom_objects = NULL, compile = TRUE) 
+
+#Lae toa indeksi ja nime seos
+load(file = "data/tuba_classes_indices_gpu.RData")
+
+# lae müügikuulutuste tabel
+korterite_myygukuulutused_raw <- read_rds("data/korterite_myygikuulutused.rds")
+```
+
+Pane paika parameetrid
+```{r}
+# pildi suurused, mille kohta on mudel treenitud
+img_width <- round(383 / 2, 0)
+img_height <- round(218 / 2, 0)
+```
+
+
+Tutvu andmetega
+```{r}
+glimpse(korterite_myygukuulutused_raw)
+```
+
+Koosta nimekiri pildi path-ga, mis on avapildid, ja mille kohta tahan tuba ennustada
+```{r}
+kuulutuse_pildi_path <- korterite_myygukuulutused_raw %>% 
+  mutate(path = str_c("data/kuulutuste_pildid_backup/kuulutuste_pildid_backup/", str_extract(pildi_url, "(?<=_34_).*"))) %>% 
+  distinct(path) %>% 
+  pull(path)
+
+head(kuulutuse_pildi_path)
+```
+
+Koosta funktsioon, mille abil iga pildi puhul ennustus teha
+```{r}
+ennusta_tuba <- function(x){
+  img <- image_load(x, target_size = c(img_height, img_width))
+  data <- image_to_array(img)
+  dim(data) <- c(1, img_height, img_width, 3)
+  ans <- round(predict(toad_model, data), 2) %>% 
+    as_tibble() %>% 
+    mutate(path = x)
+  
+  return(ans)
+}
+
+ennusta_tuba_possibly <- possibly(ennusta_tuba, NULL)
+```
+
+Ennusta kõigi kuulutuste avapildi tuba
+```{r}
+system.time(
+  tubade_ennustus <- map_df(kuulutuse_pildi_path, ennusta_tuba_possibly)
+)
+```
+
+Salvesta ennustused
+```{r}
+write_rds(tubade_ennustus, "data/tubade_ennustus.rds")
+```
+
+
+### Mudeli täpsus
+
+Seadista parameetrid
+```{r}
+valid_image_files_path <- "data/validation/"
+
+# tubade list
+tuba_list <- fs::dir_ls("data/train") %>% 
+  as.character() %>% 
+  str_replace("data/train/", "")
+
+img_width <- round(383 / 2, 0)
+img_height <- round(218 / 2, 0)
+target_size <- c(img_height, img_width)
+
+# scale validation piltide andmed
+valid_data_gen <- image_data_generator(
+  rescale = 1/255
+  ) 
+```
+
+Testi mudeli täpsust valideerimis andmete peal
+```{r}
+# validation images
+valid_image_array_gen <- flow_images_from_directory(valid_image_files_path, 
+                                          valid_data_gen,
+                                          target_size = target_size,
+                                          class_mode = "categorical",
+                                          classes = tuba_list,
+                                          batch_size = 20)
+
+toad_model %>% evaluate_generator(valid_image_array_gen, steps = 10)
+```
+
+
+
+### Ennusta eeltreenitud mudeli põhjal tulemusi
+
+Funktsioon pilti labeli ennustamiseks, et testida tulemusi
+https://github.com/uday97/food-recognition/blob/5e5c739e5f24f9355180105a544f31a0e7153a82/model_prediction.R
+```{r}
+prediction <- function(x){
+  img <- image_load(x, target_size = c(img_height, img_width))
+  data <- image_to_array(img)
+  dim(data) <- c(1, img_height, img_width, 3)
+  ans <- predict(toad_model, data)
+  return(round(ans, 2))
+}
+```
+
+
+Kuva tubade indeksid, mis mudelis on kasutusel
+```{r}
+tuba_classes_indices %>% 
+  as_tibble() %>% 
+  gather("tuba", "indeks") %>% 
+  arrange(indeks) %>% 
+  mutate(id = indeks + 1) %>% 
+  select(id, tuba)
+```
+
+
+Ennusta pildi tag
+```{r}
+random_pilt <- list.files("data/kuulutuste_pildid_backup/kuulutuste_pildid_backup/", full.names = TRUE) %>% 
+  as_tibble() %>% 
+  sample_n(1) %>% 
+  pull(value)
+
+image_read(random_pilt)
+
+prediction(random_pilt) 
+```
+
+
+
+

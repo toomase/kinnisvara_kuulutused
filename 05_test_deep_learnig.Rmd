@@ -1,0 +1,225 @@
+---
+title: "Test deep learning"
+output: html_notebook
+---
+
+Testi deep learningut, et kinnisvara pilte klassifitseerida
+Kasuta lihtsat käsitsi loodud mudelit
+Põhineb blogipostitusel: https://shirinsplayground.netlify.com/2018/06/keras_fruits/
+Lisaks on kasutatud: http://blogs.rstudio.com/tensorflow/posts/2017-12-14-image-classification-on-small-datasets/
+
+```{r}
+library(keras)
+library(tidyverse)
+library(magick)
+
+# random pilt
+image_read("data/train/kook/55525479.jpg")
+```
+
+
+
+## Loo nullist lihtne mudel pildi põhjal toa ennustamiseks
+
+Pane paika parameetrid
+```{r}
+# tubade list
+tuba_list <- fs::dir_ls("data/train") %>% 
+  as.character() %>% 
+  str_replace("data/train/", "")
+
+# klassifitseeritavate tubade arv
+output_n <- length(tuba_list)
+
+# muuda pildid väiksemaks, et mudel oleks kiirem
+img_width <- round(383 / 2, 0)
+img_height <- round(218 / 2, 0)
+target_size <- c(img_height, img_width)
+
+# RGB = 3 channels
+channels <- 3
+
+# piltide path train ja validation kaustas
+train_image_files_path <- "data/train"
+valid_image_files_path <- "data/validation/"
+```
+
+Muuda piltide pixel väärtused nii, et need oleks 0 ja 1 vahel
+```{r}
+# scale piltide andmed
+# muuda igas epochis ka pisut pilte, et vältida overfittingut
+train_data_gen = image_data_generator(
+  rescale = 1/255,
+  rotation_range = 40,
+  width_shift_range = 0.2,
+  height_shift_range = 0.2,
+  shear_range = 0.2,
+  zoom_range = 0.2,
+  horizontal_flip = TRUE,
+  fill_mode = "nearest"
+)
+
+# scale validation piltide andmed
+valid_data_gen <- image_data_generator(
+  rescale = 1/255
+  )  
+```
+
+Lae pildid mälusse ja muuda nende suurust
+```{r}
+# training images
+train_image_array_gen <- flow_images_from_directory(train_image_files_path, 
+                                          train_data_gen,
+                                          target_size = target_size,
+                                          class_mode = "categorical",
+                                          classes = tuba_list,
+                                          seed = 42)
+
+# validation images
+valid_image_array_gen <- flow_images_from_directory(valid_image_files_path, 
+                                          valid_data_gen,
+                                          target_size = target_size,
+                                          class_mode = "categorical",
+                                          classes = tuba_list,
+                                          seed = 42)
+```
+
+Kui palju erinevaid tubade pilte train kaustas on?
+```{r}
+table(factor(train_image_array_gen$classes))
+train_image_array_gen$class_indices
+```
+
+Salvesta tubade indeksid
+```{r}
+tuba_classes_indices <- train_image_array_gen$class_indices
+
+save(tuba_classes_indices, 
+     file = "data/tuba_classes_indices.RData")
+```
+
+Seadista deep learning mudeli parameetrid
+```{r}
+# number of training samples
+train_samples <- train_image_array_gen$n
+
+# number of validation samples
+valid_samples <- valid_image_array_gen$n
+
+# define batch size and number of epochs
+batch_size <- 32
+epochs <- 10
+```
+
+Seadista deep learning mudel
+```{r}
+# initialise model
+model <- keras_model_sequential()
+
+# add layers
+model %>%
+  layer_conv_2d(filter = 32, kernel_size = c(3, 3), padding = "same", 
+                input_shape = c(img_height, img_width, channels)) %>%
+  layer_activation("relu") %>%
+  
+  # Second hidden layer
+  layer_conv_2d(filter = 16, kernel_size = c(3, 3), padding = "same") %>%
+  layer_activation_leaky_relu(0.5) %>%
+  layer_batch_normalization() %>%
+
+  # Use max pooling
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(0.25) %>%
+  
+  # Flatten max filtered output into feature vector 
+  # and feed into dense layer
+  layer_flatten() %>%
+  layer_dense(100) %>%
+  layer_activation("relu") %>%
+  layer_dropout(0.5) %>%
+
+  # Outputs from dense layer are projected onto output layer
+  layer_dense(output_n) %>% 
+  layer_activation("softmax")
+
+# compile
+model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_rmsprop(lr = 0.0001, decay = 1e-6),
+  metrics = "accuracy"
+)
+```
+
+Mudeli treenimine
+```{r}
+# fit
+hist <- model %>% fit_generator(
+  # training data
+  train_image_array_gen,
+  
+  # epochs
+  steps_per_epoch = as.integer(train_samples / batch_size), 
+  epochs = epochs, 
+  
+  # validation data
+  validation_data = valid_image_array_gen,
+  validation_steps = as.integer(valid_samples / batch_size),
+  
+  # print progress
+  verbose = 2
+)
+```
+
+Vana tulemus:
+Epoch 10/10
+ - 8s - loss: 0.6358 - acc: 0.7681 - val_loss: 1.5285 - val_acc: 0.4867
+
+Salvesta mudeli tulemused
+```{r}
+save_model_hdf5(model, "data/toad_lihtne.h5")
+```
+
+Plot results
+```{r}
+plot(hist)
+```
+
+
+### Ennusta lihtsa mudeli põhjal tulemusi
+
+Funktsioon pilti labeli ennustamiseks, et testida tulemusi
+https://github.com/uday97/food-recognition/blob/5e5c739e5f24f9355180105a544f31a0e7153a82/model_prediction.R
+```{r}
+#lae tubade mudel, et selle abil ennustusi teha
+toad_model <- load_model_hdf5("data/toad_lihtne.h5", custom_objects = NULL, compile = TRUE) 
+
+prediction <- function(x){
+  img <- image_load(x, target_size = c(img_height, img_width))
+  data <- image_to_array(img)
+  dim(data) <- c(1, img_height, img_width, 3)
+  ans <- predict(toad_model, data)
+    return(ans)
+}
+```
+
+
+Kuva tubade indeksid, mis mudelis on kasutusel
+```{r}
+tuba_classes_indices %>% 
+  as_tibble() %>% 
+  gather("tuba", "indeks") %>% 
+  arrange(indeks) %>% 
+  mutate(id = indeks + 1) %>% 
+  select(id, tuba)
+```
+
+Ennusta pildi tag
+```{r}
+random_pilt <- list.files("data/kuulutuste_pildid_backup/kuulutuste_pildid_backup/", full.names = TRUE) %>% 
+  as_tibble() %>% 
+  sample_n(1) %>% 
+  pull(value)
+
+image_read(random_pilt)
+prediction(random_pilt) 
+```

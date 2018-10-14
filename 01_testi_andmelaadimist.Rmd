@@ -1,0 +1,133 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Testi kuidas saaks teha kinnisvara kuulutuste piltide pealt deep learning klassifitseerimist.
+ * kas city24.ee või kv.ee lehelt saab lihtsalt kuulutuste avapilte alla laadida?
+ 
+
+```{r}
+library(rvest)
+library(tidyverse)
+library(magick)
+
+```
+
+Funktsioon kuulutuste info kraapimiseks
+```{r}
+kraabi_kuulutuste_info <- function(x){
+  Sys.sleep(abs(rnorm(1)))
+  
+  lehe_html <- read_html(x)
+  
+  aadress <- lehe_html %>% 
+    html_nodes(".object-title-a") %>% 
+    html_text() %>% 
+    str_wrap()
+  
+  kirjeldus <- lehe_html %>% 
+    html_nodes(".object-excerpt") %>% 
+    html_text() %>% 
+    str_wrap() %>% 
+    # kuna kirjeldus on kahel real iga kuuutuse kohta, siis pane need ühele reale kokku
+    as.tibble() %>% 
+    mutate(id = rep(1:50, each = 2)) %>% 
+    group_by(id) %>% 
+    summarise(kirjeldus = str_c(value, collapse = "\n")) %>% 
+    pull(kirjeldus)
+  
+  tube <- lehe_html %>% 
+    html_nodes(".object-rooms") %>% 
+    html_text() %>% 
+    as.numeric()
+  
+  pind = lehe_html %>% 
+    html_nodes(".object-m2") %>% 
+    html_text() %>% 
+    str_wrap()
+  
+  hind <- lehe_html %>% 
+    html_nodes(".object-price-value") %>% 
+    html_text() %>% 
+    str_wrap()
+  
+  pildi_url <- lehe_html %>% 
+    html_nodes(".image_lazy") %>% 
+    html_attr("data-original") %>% 
+    str_replace_all("1_32_", "1_34_")  # suurem pildi formaat
+  
+  kuulutuse_url <- lehe_html %>% 
+    html_nodes(".object-title-a") %>% 
+    html_attr("href")
+  
+  kuulutuste_info <- tibble(aadress, tube, pind, hind, kirjeldus, 
+                            kuulutuse_url, pildi_url)
+  
+  return(kuulutuste_info)
+}
+
+kraabi_kuulutuste_info_possibly <- possibly(kraabi_kuulutuste_info, NULL)
+```
+
+Genereeri kuulutuste avalehed, mille pealt hakkan andmeid kraapima
+```{r}
+kuulutused_url <- str_c("http://kinnisvaraportaal-kv-ee.postimees.ee/?act=search.simple&page=", 1:238, "&orderby=ob&deal_type=1&dt_select=1&search_type=old&keyword")
+```
+
+Kraabi korterite müügikuulutuste info
+```{r}
+system.time(
+  korterite_myygikuulutused <- map_df(kuulutused_url, kraabi_kuulutuste_info_possibly)
+)
+```
+
+Salvesta kuulutuste dataframe edasiseks kasutamiseks
+```{r}
+saveRDS(korterite_myygikuulutused, file = "data/korterite_myygikuulutused.rds")
+```
+
+
+Funktsioon piltide allalaadimiseks ja nimetamiseks
+```{r}
+salvesta_pilt <- function(x){
+  Sys.sleep(abs(rnorm(1)))
+  output <- str_c("data/kuulutuste_pildid/", str_extract(x, "(?<=_34_).*"))
+  download.file(x, output)
+}
+
+salvesta_pilt_possibly <- possibly(salvesta_pilt, NULL)
+```
+
+Lae kõigi kuulutuste pildid
+```{r message=FALSE, warning=FALSE}
+system.time(
+  map(korterite_myygikuulutused$pildi_url, salvesta_pilt_possibly)
+)
+```
+
+
+
+## Töötle pilte
+
+Lae piltide nimekiri ja vali sealt random 1 pilt ning kuva see välja
+```{r}
+pildid_path <- list.files("data/kuulutuste_pildid_test", full.names = TRUE)
+
+pilt_sample <- sample(pildid_path, 1)
+
+image_read(pilt_sample)
+```
+
+Määra tunnus ja salvesta eraldi rds objektina
+```{r}
+pildi_grupp <- "väljas"
+
+tunnus_path <- str_c("data/kuulutuste_pildid_test_tunnused/", str_extract(pilt_sample, "[[:digit:]]{8}"), ".rds")
+
+saveRDS(pildi_grupp, tunnus_path)
+```
+
+```{r}
+map_chr(list.files("data/kuulutuste_pildid_test_tunnused/", full.names = TRUE), readRDS)
+```
